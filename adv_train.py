@@ -16,7 +16,7 @@ from yolov3_tf2.models import (
     yolo_anchors, yolo_anchor_masks,
     yolo_tiny_anchors, yolo_tiny_anchor_masks
 )
-from yolov3_tf2.utils import freeze_all
+from yolov3_tf2.utils import freeze_all, draw_outputs
 import yolov3_tf2.dataset as dataset
 import my_utils.patch_util as pu
 import my_utils.tf_util as tu
@@ -39,9 +39,9 @@ flags.DEFINE_enum('transfer', 'none',
                   'frozen: Transfer and freeze all, '
                   'fine_tune: Transfer all and freeze darknet only')
 flags.DEFINE_integer('size', 416, 'image size')
-flags.DEFINE_integer('epochs', 2, 'number of epochs')
-flags.DEFINE_integer('batch_size', 8, 'batch size')
-flags.DEFINE_float('learning_rate', 1e-3, 'learning rate')
+flags.DEFINE_integer('epochs', 100, 'number of epochs')
+flags.DEFINE_integer('batch_size', 1, 'batch size')
+flags.DEFINE_float('learning_rate', 0.1, 'learning rate')
 flags.DEFINE_integer('num_classes', 80, 'number of classes in the model')
 flags.DEFINE_integer('weights_num_classes', None, 'specify num class for `weights` file if different, '
                      'useful in transfer learning with different number of classes')
@@ -147,67 +147,102 @@ def main(_argv):
         dataset.transform_targets(y, anchors, anchor_masks, FLAGS.size)))
 
     if FLAGS.mode == 'eager_tf':
+        tf.keras.backend.clear_session()
+
         # Eager mode is great for debugging
         # Non eager graph mode is recommended for real training
         avg_loss = tf.keras.metrics.Mean('loss', dtype=tf.float32)
         avg_val_loss = tf.keras.metrics.Mean('val_loss', dtype=tf.float32)
 
-        # images shape (1, 416, 416, 3)
-        # Patch shape (1, 3, 416, 416)
-        patch = pu.initialize_patch()
-        patch_dummy = pu.get_patch_dummy(patch, (1, 3, 416, 416), 0, 0)
+        # images are loaded in shape (1, 416, 416, 3)
+        patch = pu.initialize_patch() # shape (1, 3, 416, 416)
+        dummy_img_shape = (1, 3, 416, 416)
+        patch_x, patch_y = 0, 0
+        patch_dummy = pu.get_patch_dummy(
+            patch, dummy_img_shape, patch_x, patch_y) # shape (1, 3, 416, 416)
+        img_mask, patch_mask = pu.get_img_and_patch_masks(patch_dummy)
+
+        # Detection model - to test whether patch attacks successfully
+        yolo = YoloV3(classes=FLAGS.num_classes)
+        yolo.load_weights(FLAGS.weights)
         
+        patch_dummy = pu.get_patch_dummy(patch, dummy_img_shape, patch_x, patch_y)
         for epoch in range(1, FLAGS.epochs + 1):
+            # patch_dummy shape (1, 3, 416, 416)
+            # adv_img shape (1, 416, 416, 3)
             for batch, (images, labels) in enumerate(train_dataset):
                 # Note: labels is different from what I expected...
                 # lables[1] contain label for chair and cellphone
                 # labels[0] contain label for person
-                print(labels[0].shape)
-                print(labels[1].shape)
-                print(labels[2].shape)
-                # tf.print(labels[1], summarize=-1)
-                # print("@@@@@@@@@@@@@@@@@@@@@")
-                # print(tf.math.argmax(labels[0]))
-                exit()
+                # print(labels[0].shape)
+                # print(labels[1].shape)
+                # print(labels[2].shape)
+
+                # print(tf.config.experimental.get_memory_usage('GPU:0')["current"])
+
+                images = pu.patch_on_img(patch_dummy, images, patch_mask)
+                images = tf.Variable(images, trainable=True)
+
                 with tf.GradientTape() as tape:
-                    outputs = model(images, training=True)
+                    tape.reset()
+                    outputs = model(images, training=False)
                     regularization_loss = tf.reduce_sum(model.losses)
                     pred_loss = []
                     for output, label, loss_fn in zip(outputs, labels, loss):
                         pred_loss.append(loss_fn(label, output))
                     total_loss = tf.reduce_sum(pred_loss) + regularization_loss
+                    # total_loss = regularization_loss
 
-                grads = tape.gradient(total_loss, model.trainable_variables)
-                optimizer.apply_gradients(
-                    zip(grads, model.trainable_variables))
+                grads = tape.gradient(total_loss, images)
+                # grad = tu.channel_to_first(grads)
+                # grad = tf.multiply(img_mask, grad)
+                # # grad = tu.channel_to_last(grad)
+                # patch_dummy = patch_dummy + (500 * grad)
+                # patch_dummy = tf.clip_by_value(patch_dummy, 0.0, 1.0)
 
-                logging.info("{}_train_{}, {}, {}".format(
-                    epoch, batch, total_loss.numpy(),
-                    list(map(lambda x: np.sum(x.numpy()), pred_loss))))
+                patch_dummy = tu.channel_to_last(patch_dummy)
+                patch_dummy = tf.Variable(patch_dummy, trainable=True)
+                optimizer.apply_gradients([(grads, patch_dummy)])
+                patch_dummy = tu.channel_to_first(patch_dummy)
+                patch_dummy = tf.multiply(img_mask, patch_dummy)
+                
+                if epoch % 20 == 0:
+                    logging.info("{}_train_{}, {}, {}".format(
+                            epoch, batch, total_loss.numpy(),
+                            list(map(lambda x: np.sum(x.numpy()), pred_loss))))
+                    
+
+                if epoch % 100 == 0:
+                    class_names = [c.strip() for c in open(FLAGS.classes).readlines()]
+                    boxes, scores, classes, nums = yolo(images)
+                    # cv2 (OpenCV) assumes img to be BGR/BGRA
+                    save_img = cv2.cvtColor(images.numpy()[0], cv2.COLOR_RGB2BGR)
+                    save_img *= 255 # transform_images(...) scaled img btwn [0, 1]
+                    save_img = draw_outputs(save_img, (boxes, scores, classes, nums), class_names)
+                    cv2.imwrite("./output_{}.jpg".format(epoch), save_img)                   
                 avg_loss.update_state(total_loss)
 
-            for batch, (images, labels) in enumerate(val_dataset):
-                outputs = model(images)
-                regularization_loss = tf.reduce_sum(model.losses)
-                pred_loss = []
-                for output, label, loss_fn in zip(outputs, labels, loss):
-                    pred_loss.append(loss_fn(label, output))
-                total_loss = tf.reduce_sum(pred_loss) + regularization_loss
+                # tf.keras.preprocessing.image.save_img("./adv_img.jpg", images[0])
 
-                logging.info("{}_val_{}, {}, {}".format(
-                    epoch, batch, total_loss.numpy(),
-                    list(map(lambda x: np.sum(x.numpy()), pred_loss))))
-                avg_val_loss.update_state(total_loss)
+            if epoch == FLAGS.epochs:
+                class_names = [c.strip() for c in open(FLAGS.classes).readlines()]
+                boxes, scores, classes, nums = yolo(images)
+                # cv2 (OpenCV) assumes img to be BGR/BGRA
+                images = cv2.cvtColor(images.numpy()[0], cv2.COLOR_RGB2BGR)
+                images *= 255 # transform_images(...) scaled img btwn [0, 1]
+                images = draw_outputs(images, (boxes, scores, classes, nums), class_names)
+                cv2.imwrite("./output.jpg", images)
 
-            logging.info("{}, train: {}, val: {}".format(
-                epoch,
-                avg_loss.result().numpy(),
-                avg_val_loss.result().numpy()))
+                logging.info('detections:')
+                for i in range(nums[0]):
+                    logging.info('\t{}, {}, {}'.format(
+                        class_names[int(classes[0][i])],
+                        np.array(scores[0][i]),
+                        np.array(boxes[0][i])))
 
             avg_loss.reset_states()
             avg_val_loss.reset_states()
-            model.save_weights(
-                'checkpoints/yolov3_train_{}.tf'.format(epoch))
+
     else:
 
         callbacks = [
