@@ -133,12 +133,14 @@ def load_fake_dataset():
         open('./data/girl.png', 'rb').read(), channels=3)
     x_train = tf.expand_dims(x_train, axis=0)
 
+    # labels = [
+    #     [0.18494931, 0.03049111, 0.9435849,  0.96302897, 0],
+    #     [0.01586703, 0.35938117, 0.17582396, 0.6069674, 56],
+    #     [0.09158827, 0.48252046, 0.26967454, 0.6403017, 67]
+    # ] + [[0, 0, 0, 0, 0]] * 5
     labels = [
-        [0.18494931, 0.03049111, 0.9435849,  0.96302897, 0],
-        [0.01586703, 0.35938117, 0.17582396, 0.6069674, 56],
-        [0.09158827, 0.48252046, 0.26967454, 0.6403017, 67]
+        [0.0, 0.0, 0.12, 0.12, 50]
     ] + [[0, 0, 0, 0, 0]] * 5
     y_train = tf.convert_to_tensor(labels, tf.float32)
     y_train = tf.expand_dims(y_train, axis=0)
-
     return tf.data.Dataset.from_tensor_slices((x_train, y_train))
