@@ -129,18 +129,32 @@ def load_tfrecord_dataset(file_pattern, class_file, size=416):
 
 
 def load_fake_dataset():
+    temp_path = './data/girl.png'
     x_train = tf.image.decode_jpeg(
-        open('./data/girl.png', 'rb').read(), channels=3)
+        open(temp_path, 'rb').read(), channels=3)
     x_train = tf.expand_dims(x_train, axis=0)
 
+
+    # girl.png label
     # labels = [
     #     [0.18494931, 0.03049111, 0.9435849,  0.96302897, 0],
     #     [0.01586703, 0.35938117, 0.17582396, 0.6069674, 56],
     #     [0.09158827, 0.48252046, 0.26967454, 0.6403017, 67]
     # ] + [[0, 0, 0, 0, 0]] * 5
-    labels = [
-        [0.0, 0.0, 0.12, 0.12, 50]
-    ] + [[0, 0, 0, 0, 0]] * 5
+
+    # meme.jpg
+    # labels = [
+    #     [0.14264326, 0.52777123, 0.27190292, 0.6574669, 41],
+    #     [0.28979477, 0.0987525,  0.95848846, 0.92010915, 0],
+    #     [0,  0.3931319,   0.5224912,   0.79701966, 63],
+    #     [0.13114461, 0.7714374,  0.22893542, 0.9072944, 47],
+    #     [0.18850106, 0.8756945,  0.33501846, 0.94222105, 67],
+    #     [0.40110776, 0.21257105, 0.4926214,  0.35000327, 74]
+    # ] + [[0, 0, 0, 0, 0]] * 5
+
+    labels = [[0, 0, 0, 0, 0]]
+
+    # labels = [[0.0, 0.0, 0.12, 0.12, 50]]
     y_train = tf.convert_to_tensor(labels, tf.float32)
     y_train = tf.expand_dims(y_train, axis=0)
     return tf.data.Dataset.from_tensor_slices((x_train, y_train))
